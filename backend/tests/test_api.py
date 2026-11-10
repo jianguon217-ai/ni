@@ -1,8 +1,15 @@
 from fastapi.testclient import TestClient
 
+from app import main
 from app.main import app
 
 client = TestClient(app)
+
+
+def setup_function():
+    main.DB_PATH = main.Path("/tmp/mycodex-studio-test-jobs.sqlite3")
+    main.DB_PATH.unlink(missing_ok=True)
+    main.init_db()
 
 
 def test_health():
@@ -31,8 +38,10 @@ def test_live_generation_is_blocked_until_adapter_is_verified():
     assert response.status_code == 501
 
 
-def test_job_lookup():
+def test_job_lookup_survives_module_level_memory_reset():
     created = client.post("/v1/jobs", json={"prompt": "test"}).json()
     fetched = client.get(f"/v1/jobs/{created['id']}")
     assert fetched.status_code == 200
     assert fetched.json()["id"] == created["id"]
+    # A fresh lookup reads SQLite, not a process-local dictionary.
+    assert main._load_job(created["id"]).request.prompt == "test"
