@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, HttpUrl
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
+DB_PATH = Path(os.getenv("MYCODEX_DB_PATH", "/data/jobs.sqlite3"))
 app = FastAPI(
     title="MyCodex Studio API",
     version=APP_VERSION,
@@ -52,7 +56,69 @@ class Job(BaseModel):
     output_url: str | None = None
 
 
-JOBS: dict[str, Job] = {}
+def _connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db() -> None:
+    with _connect() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                message TEXT NOT NULL,
+                provider_task_id TEXT,
+                output_url TEXT
+            )
+            """
+        )
+
+
+def _save_job(job: Job) -> None:
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO jobs
+            (id, status, created_at, request_json, message, provider_task_id, output_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.id,
+                job.status.value,
+                job.created_at.isoformat(),
+                job.request.model_dump_json(),
+                job.message,
+                job.provider_task_id,
+                job.output_url,
+            ),
+        )
+
+
+def _load_job(job_id: str) -> Job | None:
+    with _connect() as connection:
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        return None
+    return Job(
+        id=row["id"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        request=GenerateRequest.model_validate_json(row["request_json"]),
+        message=row["message"],
+        provider_task_id=row["provider_task_id"],
+        output_url=row["output_url"],
+    )
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
 
 
 @app.get("/health")
@@ -90,9 +156,7 @@ def vidmuse_models() -> dict[str, Any]:
     if result.returncode == 3:
         raise HTTPException(status_code=401, detail="VidMuse CLI is not authenticated. Authenticate interactively in the runtime.")
     if result.returncode != 0:
-        # Avoid returning stderr verbatim because it may contain sensitive runtime details.
         raise HTTPException(status_code=502, detail=f"VidMuse model discovery failed (exit {result.returncode}).")
-    import json
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -115,13 +179,13 @@ def create_job(request: GenerateRequest) -> Job:
         request=request,
         message="Dry-run accepted. No provider was called and no credits were consumed.",
     )
-    JOBS[job_id] = job
+    _save_job(job)
     return job
 
 
 @app.get("/v1/jobs/{job_id}", response_model=Job)
 def get_job(job_id: str) -> Job:
-    job = JOBS.get(job_id)
+    job = _load_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found.")
     return job
