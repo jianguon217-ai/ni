@@ -5,9 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MYCODEX_DB_PATH=/data/jobs.sqlite3
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && mkdir -p /data
+COPY requirements.txt pyproject.toml ./
+RUN python -m pip install --no-cache-dir -r requirements.txt && mkdir -p /data
 COPY app ./app
+RUN python -m pip install --no-cache-dir --no-deps .
 
 VOLUME ["/data"]
 EXPOSE 8000
