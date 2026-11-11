@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: mycodex-studio-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: MYCODEX_DB_PATH
+        value: /tmp/mycodex/jobs.sqlite3
